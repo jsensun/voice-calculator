@@ -419,6 +419,8 @@
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   let recognition = null;
   let listening = false;
+  let retryCount = 0;     // 自动重试计数（应对 iOS 首次 abort）
+  let isRetrying = false; // 自动重试进行中，避免 onend 覆盖提示
 
   // ---------- 环境自检（针对手机场景） ----------
   function detectEnv() {
@@ -463,16 +465,28 @@
 
     // 把真实错误码显示出来，方便定位（不再笼统地只说"出错"）
     recognition.onerror = (e) => {
+      const code = e.error || "unknown";
+      // iOS 常见：首次启动识别被系统中断（aborted），自动重试一次往往就正常
+      if ((code === "aborted" || code === "network") && retryCount < 2) {
+        retryCount++;
+        isRetrying = true;
+        setStatus("识别被中断，正在重试（" + retryCount + "/2）…", "listening");
+        micBtn.classList.add("listening");
+        setTimeout(() => {
+          isRetrying = false;
+          try { recognition.start(); } catch (_) {}
+        }, 300);
+        return;
+      }
       listening = false;
       micBtn.classList.remove("listening");
-      const code = e.error || "unknown";
       const map = {
         "not-allowed": "麦克风权限被拒绝，请在浏览器地址栏左侧允许麦克风",
         "service-not-allowed": "系统未授权语音服务（iOS 需开启 设置 → Siri 与听写，并保持联网）",
         "no-speech": "没听到声音，请靠近麦克风再说一次",
         "audio-capture": "没检测到麦克风，或麦克风被其他应用占用",
         "network": "网络异常，语音识别需要联网",
-        "aborted": "识别被系统中断"
+        "aborted": "识别被系统中断（iOS 首次识别常出现，请再点一次麦克风；若反复出现，请确认 设置→Siri 与听写 已开启、网络正常）"
       };
       const msg = (map[code] || "语音识别出错") + "（错误码：" + code + "）";
       setStatus(msg, "err");
@@ -481,6 +495,7 @@
     recognition.onend = () => {
       listening = false;
       micBtn.classList.remove("listening");
+      if (isRetrying) return;   // 正在自动重试，不覆盖提示
       if (statusEl.classList.contains("listening"))
         setStatus("识别结束，可手动修改后计算", "");
     };
@@ -503,6 +518,7 @@
     }
     if (!recognition) return;
     if (listening) { recognition.stop(); return; }
+    retryCount = 0;
     try {
       recognition.start();
     } catch (e) {
