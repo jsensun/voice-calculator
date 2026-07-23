@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<!-- 手机端关键：禁止缩放，避免点击输入框时页面放大，影响计算器体验 -->
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="theme-color" content="#1c1c1e" />
+<title>语音计算器</title>
+<style>
+  :root {
+    --accent: #ff6600;          /* 活力橘主题色 */
+    --bg: #1c1c1e;
+    --panel: #2c2c2e;
+    --btn: #3a3a3c;
+    --btn-active: #505052;
+    --text: #ffffff;
+    --muted: #8e8e93;
+    --ok: #34c759;
+    --err: #ff3b30;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text",
+      "PingFang SC", "Microsoft YaHei", Roboto, sans-serif;
+    /* 防止按钮点击时的 300ms 延迟和双击缩放 */
+    touch-action: manipulation;
+    overscroll-behavior: none;
+  }
+  .app {
+    max-width: 480px; margin: 0 auto; min-height: 100%;
+    display: flex; flex-direction: column;
+    padding: env(safe-area-inset-top) 16px env(safe-area-inset-bottom);
+  }
+  header { padding: 14px 4px 6px; display: flex; align-items: center; justify-content: space-between; }
+  header h1 { font-size: 17px; font-weight: 600; margin: 0; letter-spacing: .5px; }
+  .hint { font-size: 12px; color: var(--muted); }
+
+  /* 显示屏 */
+  .display {
+    background: var(--panel); border-radius: 18px; padding: 18px 20px;
+    margin: 8px 0 14px; min-height: 120px;
+    display: flex; flex-direction: column; justify-content: flex-end; gap: 6px;
+  }
+  .expr {
+    font-size: 20px; color: var(--muted); min-height: 24px; word-break: break-all;
+    text-align: right; line-height: 1.3;
+  }
+  .result {
+    font-size: 44px; font-weight: 600; text-align: right; line-height: 1.1;
+    word-break: break-all;
+  }
+  .result.err { color: var(--err); font-size: 22px; font-weight: 500; }
+
+  /* 状态条（语音提示） */
+  .status {
+    min-height: 20px; font-size: 13px; padding: 0 4px 8px; color: var(--muted);
+    text-align: center; transition: color .2s;
+  }
+  .status.listening { color: var(--accent); }
+  .status.ok { color: var(--ok); }
+  .status.err { color: var(--err); }
+
+  /* 语音输入行 */
+  .voice-row { display: flex; gap: 10px; margin-bottom: 12px; }
+  .mic-btn {
+    flex: 0 0 auto; width: 56px; height: 56px; border-radius: 50%;
+    background: var(--accent); border: none; color: #fff; font-size: 24px;
+    display: flex; align-items: center; justify-content: center;
+    transition: transform .15s, box-shadow .2s;
+  }
+  .mic-btn:active { transform: scale(.92); }
+  .mic-btn.listening { animation: pulse 1.2s infinite; }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(255,102,0,.5); }
+    70% { box-shadow: 0 0 0 16px rgba(255,102,0,0); }
+    100% { box-shadow: 0 0 0 0 rgba(255,102,0,0); }
+  }
+  .voice-input {
+    flex: 1; background: var(--panel); border: 1px solid #3a3a3c; border-radius: 14px;
+    color: var(--text); font-size: 16px; padding: 0 14px;
+  }
+  .voice-input::placeholder { color: var(--muted); }
+
+  /* 按钮网格 */
+  .grid {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;
+    padding-bottom: 16px;
+  }
+  .key {
+    background: var(--btn); border: none; color: var(--text);
+    font-size: 24px; font-weight: 500; border-radius: 16px;
+    height: 64px; display: flex; align-items: center; justify-content: center;
+    transition: background .12s, transform .08s;
+  }
+  .key:active { background: var(--btn-active); transform: scale(.96); }
+  .key.op { background: #4a4a4c; color: var(--accent); font-weight: 600; }
+  .key.eq { background: var(--accent); color: #fff; font-weight: 700; }
+  .key.fn { background: #45454a; color: var(--muted); font-size: 20px; }
+
+  /* 折叠说明 */
+  details.info { background: var(--panel); border-radius: 14px; padding: 4px 14px; margin-bottom: 14px; }
+  details.info summary { padding: 10px 0; font-size: 14px; color: var(--muted); cursor: pointer; }
+  details.info p, details.info li { font-size: 13px; color: var(--muted); line-height: 1.6; }
+  details.info code { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>语音计算器</h1>
+    <span class="hint">手机端 · 点麦克风说话</span>
+  </header>
+
+  <div class="display">
+    <div class="expr" id="expr"></div>
+    <div class="result" id="result">0</div>
+  </div>
+
+  <div class="status" id="status">点击下方麦克风，说出算式，例如「25加3」或「三点五乘以二」</div>
+
+  <div class="voice-row">
+    <!-- x-webkit-speech: 安卓 Chrome 会在输入框内显示系统麦克风按钮作为补充方案 -->
+    <input class="voice-input" id="voiceInput" type="text" inputmode="text"
+           x-webkit-speech speech placeholder="识别结果会显示在这里，可手动修改"
+           autocomplete="off" />
+    <button class="mic-btn" id="micBtn" aria-label="语音输入">🎤</button>
+  </div>
+
+  <div class="grid">
+    <button class="key fn" data-k="C">C</button>
+    <button class="key fn" data-k="⌫">⌫</button>
+    <button class="key fn" data-k="%">%</button>
+    <button class="key op" data-k="/">÷</button>
+
+    <button class="key" data-k="7">7</button>
+    <button class="key" data-k="8">8</button>
+    <button class="key" data-k="9">9</button>
+    <button class="key op" data-k="*">×</button>
+
+    <button class="key" data-k="4">4</button>
+    <button class="key" data-k="5">5</button>
+    <button class="key" data-k="6">6</button>
+    <button class="key op" data-k="-">−</button>
+
+    <button class="key" data-k="1">1</button>
+    <button class="key" data-k="2">2</button>
+    <button class="key" data-k="3">3</button>
+    <button class="key op" data-k="+">+</button>
+
+    <button class="key" data-k="0">0</button>
+    <button class="key" data-k=".">.</button>
+    <button class="key fn" data-k="(">(</button>
+    <button class="key eq" data-k="=">=</button>
+  </div>
+
+  <details class="info">
+    <summary>手机语音输入的限制与说明（点开看）</summary>
+    <p>手机浏览器对语音识别有硬性限制，本应用已针对性处理：</p>
+    <ul>
+      <li><b>微信里打不开语音</b>：微信内置浏览器基本不支持语音识别，麦克风也被它拦截。请点右上角 <code>⋯</code> → 在浏览器中打开（Safari / Chrome），再用麦克风。</li>
+      <li><b>必须用 HTTPS</b>：麦克风权限只在 <code>https://</code> 或 <code>localhost</code> 下可用，用 <code>file://</code> 直接打开或普通 http 网站将无法收音。</li>
+      <li><b>必须由点击触发</b>：iOS / 安卓都要求用户主动点一下麦克风才开始识别，不能自动启动。</li>
+      <li><b>iOS 不能长时间连续识别</b>：Safari 一次识别约几秒后会自动停止，说完后松手即可，下方输入框可手动修正。</li>
+      <li><b>识别不一定准</b>：方言、环境噪音会导致数字或运算符识别错误，请核对输入框内容再计算。</li>
+      <li><b>部分浏览器不支持</b>：若提示「当前浏览器不支持语音」，可直接用键盘或输入框里的系统麦克风按钮。</li>
+    </ul>
+  </details>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  const exprEl = document.getElementById("expr");
+  const resultEl = document.getElementById("result");
+  const statusEl = document.getElementById("status");
+  const micBtn = document.getElementById("micBtn");
+  const voiceInput = document.getElementById("voiceInput");
+
+  // 当前算式（内部用 + - * /，显示时转成 × ÷ −）
+  let expr = "";
+
+  function setStatus(text, cls) {
+    statusEl.textContent = text;
+    statusEl.className = "status" + (cls ? " " + cls : "");
+  }
+
+  function fmtDisplay(e) {
+    return e
+      .replace(/\*/g, "×")
+      .replace(/\//g, "÷")
+      .replace(/-/g, "−");
+  }
+
+  function render() {
+    exprEl.textContent = fmtDisplay(expr);
+    if (expr === "") { resultEl.textContent = "0"; resultEl.className = "result"; return; }
+    const v = safeEval(expr);
+    if (v === null || v === undefined || !isFinite(v)) {
+      resultEl.textContent = "—";
+      resultEl.className = "result";
+    } else {
+      resultEl.textContent = formatNumber(v);
+      resultEl.className = "result";
+    }
+  }
+
+  function formatNumber(n) {
+    // 去掉浮点误差产生的长尾，如 0.1+0.2
+    let s = (Math.round(n * 1e10) / 1e10).toString();
+    return s;
+  }
+
+  // ---------- 安全求值（不用 eval，自己解析 + - * / 和括号） ----------
+  function safeEval(input) {
+    try {
+      const tokens = tokenizeMath(input);
+      if (!tokens) return null;
+      return evalTokens(tokens);
+    } catch (e) { return null; }
+  }
+
+  function tokenizeMath(s) {
+    const re = /\s*([0-9]+\.?[0-9]*|\.[0-9]+|[+\-*/%()])|([+\-*/%()])/g;
+    // 用更稳妥的方式：逐个字符
+    const out = [];
+    let i = 0, n = s.length;
+    while (i < n) {
+      const c = s[i];
+      if (c === " " || c === "\t") { i++; continue; }
+      if ("+-*/%()".includes(c)) { out.push({ t: "op", v: c }); i++; continue; }
+      if (/[0-9.]/.test(c)) {
+        let num = "";
+        while (i < n && /[0-9.]/.test(s[i])) { num += s[i]; i++; }
+        if ((num.match(/\./g) || []).length > 1) return null;
+        out.push({ t: "num", v: parseFloat(num) });
+        continue;
+      }
+      return null; // 含有非法字符
+    }
+    return out;
+  }
+
+  // 递归下降解析，支持 + - * / % 和 ()
+  function evalTokens(tokens) {
+    let pos = 0;
+    function peek() { return tokens[pos]; }
+    function next() { return tokens[pos++]; }
+
+    function parseExpr() {
+      let val = parseTerm();
+      while (peek() && peek().t === "op" && (peek().v === "+" || peek().v === "-")) {
+        const op = next().v;
+        const rhs = parseTerm();
+        val = op === "+" ? val + rhs : val - rhs;
+      }
+      return val;
+    }
+    function parseTerm() {
+      let val = parseFactor();
+      while (peek() && peek().t === "op" && (peek().v === "*" || peek().v === "/" || peek().v === "%")) {
+        const op = next().v;
+        const rhs = parseFactor();
+        if (op === "*") val = val * rhs;
+        else if (op === "/") { if (rhs === 0) throw new Error("div0"); val = val / rhs; }
+        else val = val % rhs;
+      }
+      return val;
+    }
+    function parseFactor() {
+      const tk = peek();
+      if (!tk) throw new Error("eof");
+      if (tk.t === "op" && tk.v === "(") {
+        next();
+        const v = parseExpr();
+        if (!peek() || peek().v !== ")") throw new Error("no )");
+        next();
+        return v;
+      }
+      if (tk.t === "num") { next(); return tk.v; }
+      if (tk.t === "op" && tk.v === "-") { next(); return -parseFactor(); }
+      if (tk.t === "op" && tk.v === "+") { next(); return parseFactor(); }
+      throw new Error("bad");
+    }
+
+    const result = parseExpr();
+    if (pos !== tokens.length) throw new Error("trailing");
+    return result;
+  }
+
+  // ---------- 语音文本 → 算式 ----------
+  const CN_DIGIT = { "零":0,"一":1,"二":2,"两":2,"三":3,"四":4,"五":5,"六":6,"七":7,"八":8,"九":9 };
+  const CN_UNIT = { "十":10,"百":100,"千":1000 };
+  const CN_BIG  = { "万":10000,"亿":100000000 };
+
+  function chineseInt(s) {
+    if (!s) return 0;
+    let total = 0, section = 0, num = 0;
+    for (const ch of s) {
+      if (ch in CN_DIGIT) num = CN_DIGIT[ch];
+      else if (ch in CN_UNIT) { const u = CN_UNIT[ch]; if (num === 0) num = 1; section += num * u; num = 0; }
+      else if (ch in CN_BIG) { section += num; total += section * CN_BIG[ch]; section = 0; num = 0; }
+      else if (ch === "零") { num = 0; }
+    }
+    return total + section + num;
+  }
+
+  function parseChineseNumber(buf) {
+    if (buf.includes("点")) {
+      const [intP, decP] = buf.split("点");
+      let intVal = chineseInt(intP);
+      let decVal = 0;
+      for (let k = 0; k < decP.length; k++) {
+        const d = CN_DIGIT[decP[k]] != null ? CN_DIGIT[decP[k]] : 0;
+        decVal += d / Math.pow(10, k + 1);
+      }
+      return intVal + decVal;
+    }
+    return chineseInt(buf);
+  }
+
+  function parseVoice(text) {
+    if (!text) return null;
+    let t = text.toLowerCase().trim();
+    // 去掉标点与空格
+    t = t.replace(/[，。？！、；：,.?!;:\s]/g, "");
+    // 去掉口语前缀/后缀词
+    t = t.replace(/(请|帮|我|算|一下|计算|多少|几|呢|啊|吧|的|这个|那个)/g, "");
+    t = t.replace(/(the|please|what|is|calculate|compute|result|answer|of)/g, "");
+    // 运算符映射
+    t = t.replace(/加上?|加号|plus/g, "+");
+    t = t.replace(/减去?|减号|minus/g, "-");
+    t = t.replace(/乘(以|上)?|times/g, "*");
+    t = t.replace(/除以|除(以)?|dividedby/g, "/");
+    t = t.replace(/百分之?/g, "%");
+    // 去掉「等于…」及其之后内容（说「等于」通常是要结果）
+    t = t.split(/等于|equals?|等于几|等于多少/)[0];
+    // 全角括号归一化为半角（语音可能返回全角）
+    t = t.replace(/（/g, "(").replace(/）/g, ")");
+
+    // 逐步转成算式字符串：阿拉伯数字 / 中文数字 / 括号 / 运算符
+    let exprStr = "";
+    let i = 0;
+    while (i < t.length) {
+      const ch = t[i];
+      if (/[0-9.]/.test(ch)) {
+        let num = "";
+        while (i < t.length && /[0-9.]/.test(t[i])) { num += t[i]; i++; }
+        if ((num.match(/\./g) || []).length > 1) return null;
+        exprStr += num;
+      } else if (ch in CN_DIGIT || ch in CN_UNIT || ch in CN_BIG || ch === "点") {
+        let buf = "";
+        while (i < t.length && ((t[i] in CN_DIGIT) || (t[i] in CN_UNIT) || (t[i] in CN_BIG) || t[i] === "点")) {
+          buf += t[i]; i++;
+        }
+        exprStr += String(parseChineseNumber(buf));
+      } else if (ch === "(" || ch === ")") {
+        exprStr += ch; i++;
+      } else if ("+-*/%".includes(ch)) {
+        exprStr += ch; i++;
+      } else {
+        i++; // 跳过无法识别的字符
+      }
+    }
+
+    if (!exprStr) return null;
+    const val = safeEval(exprStr);
+    if (val === null || !isFinite(val)) return null;
+    return { expr: exprStr, value: val };
+  }
+
+  // ---------- 键盘交互 ----------
+  document.querySelectorAll(".key").forEach(btn => {
+    btn.addEventListener("click", () => handleKey(btn.dataset.k));
+  });
+
+  function handleKey(k) {
+    if (k === "C") { expr = ""; resultEl.className = "result"; }
+    else if (k === "⌫") { expr = expr.slice(0, -1); }
+    else if (k === "=") {
+      const v = safeEval(expr);
+      if (v === null || !isFinite(v)) {
+        resultEl.textContent = "格式错误";
+        resultEl.className = "result err";
+        setStatus("算式无法计算，请检查", "err");
+        return;
+      }
+      expr = String(formatNumber(v));
+    } else {
+      // 防止出现两个连续运算符等明显错误（简单防护）
+      expr += k;
+    }
+    render();
+  }
+
+  // 输入框：手动修改或系统麦克风识别后，实时计算
+  voiceInput.addEventListener("input", () => {
+    const txt = voiceInput.value.trim();
+    if (!txt) { expr = ""; render(); return; }
+    const parsed = parseVoice(txt);
+    if (parsed) {
+      expr = parsed.expr;
+      resultEl.textContent = formatNumber(parsed.value);
+      resultEl.className = "result";
+      exprEl.textContent = fmtDisplay(parsed.expr);
+      setStatus("识别成功，已计算结果", "ok");
+    } else {
+      expr = "";
+      resultEl.textContent = "没听懂";
+      resultEl.className = "result err";
+      setStatus("未能识别为算式，可手动修改后按键盘 =", "err");
+    }
+  });
+
+  // ---------- 语音识别（Web Speech API） ----------
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let recognition = null;
+  let listening = false;
+
+  // ---------- 环境自检（针对手机场景） ----------
+  function detectEnv() {
+    const ua = navigator.userAgent || "";
+    return {
+      isWeChat: /MicroMessenger/i.test(ua),
+      isIOS: /iPhone|iPad|iPod/i.test(ua),
+      secure: window.isSecureContext || location.protocol === "https:",
+      hasSR: !!SR
+    };
+  }
+
+  if (!SR) {
+    micBtn.style.opacity = "0.5";
+    setStatus("当前浏览器不支持语音识别，请用键盘或输入框里的系统麦克风", "err");
+  } else {
+    recognition = new SR();
+    recognition.lang = "zh-CN";
+    recognition.interimResults = true;   // 实时显示中间结果
+    recognition.continuous = false;      // iOS 不支持连续识别，统一设为单次
+    recognition.maxAlternatives = 1;
+
+    recognition.onstart = () => {
+      listening = true;
+      micBtn.classList.add("listening");
+      setStatus("正在聆听…请说出算式", "listening");
+    };
+
+    recognition.onresult = (event) => {
+      let interim = "", final = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const res = event.results[i];
+        if (res.isFinal) final += res[0].transcript;
+        else interim += res[0].transcript;
+      }
+      const text = (final || interim).trim();
+      if (text) {
+        voiceInput.value = text;
+        voiceInput.dispatchEvent(new Event("input"));
+      }
+    };
+
+    // 把真实错误码显示出来，方便定位（不再笼统地只说"出错"）
+    recognition.onerror = (e) => {
+      listening = false;
+      micBtn.classList.remove("listening");
+      const code = e.error || "unknown";
+      const map = {
+        "not-allowed": "麦克风权限被拒绝，请在浏览器地址栏左侧允许麦克风",
+        "service-not-allowed": "系统未授权语音服务（iOS 需开启 设置 → Siri 与听写，并保持联网）",
+        "no-speech": "没听到声音，请靠近麦克风再说一次",
+        "audio-capture": "没检测到麦克风，或麦克风被其他应用占用",
+        "network": "网络异常，语音识别需要联网",
+        "aborted": "识别被系统中断"
+      };
+      const msg = (map[code] || "语音识别出错") + "（错误码：" + code + "）";
+      setStatus(msg, "err");
+    };
+
+    recognition.onend = () => {
+      listening = false;
+      micBtn.classList.remove("listening");
+      if (statusEl.classList.contains("listening"))
+        setStatus("识别结束，可手动修改后计算", "");
+    };
+  }
+
+  micBtn.addEventListener("click", () => {
+    const env = detectEnv();
+    // 点麦克风前先拦掉最常见的两种失败场景，避免无意义的报错
+    if (env.isWeChat) {
+      setStatus("微信内置浏览器不支持语音。点右上角 ⋯ → 在浏览器中打开（Safari / Chrome）再试", "err");
+      return;
+    }
+    if (!env.hasSR) {
+      setStatus("当前浏览器不支持语音识别，请用键盘或输入框里的系统麦克风", "err");
+      return;
+    }
+    if (!env.secure) {
+      setStatus("麦克风需要 HTTPS。请用 https 开头的地址打开本页面", "err");
+      return;
+    }
+    if (!recognition) return;
+    if (listening) { recognition.stop(); return; }
+    try {
+      recognition.start();
+    } catch (e) {
+      const detail = (e && e.message) ? e.message : "start-failed";
+      setStatus("无法启动识别：" + detail + "（请确认已允许麦克风权限）", "err");
+    }
+  });
+
+  // 页面加载即做环境自检，把结论显示出来（仅异常时覆盖默认提示）
+  (function showEnvReport() {
+    const env = detectEnv();
+    if (!env.hasSR) return;                 // 不支持的情况已在上面提示
+    if (env.isWeChat)
+      setStatus("检测到微信环境：语音不可用，请点右上角 ⋯ 用系统浏览器打开", "err");
+    else if (!env.secure)
+      setStatus("检测到非 HTTPS：麦克风被禁用，请用 https 地址打开", "err");
+  })();
+
+  render();
+})();
+</script>
+</body>
+</html>
