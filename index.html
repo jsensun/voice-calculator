@@ -419,8 +419,6 @@
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   let recognition = null;
   let listening = false;
-  let retryCount = 0;     // 自动重试计数（应对 iOS 首次 abort）
-  let isRetrying = false; // 自动重试进行中，避免 onend 覆盖提示
 
   // ---------- 环境自检（针对手机场景） ----------
   function detectEnv() {
@@ -436,20 +434,19 @@
   if (!SR) {
     micBtn.style.opacity = "0.5";
     setStatus("当前浏览器不支持语音识别，请用键盘或输入框里的系统麦克风", "err");
-  } else {
-    recognition = new SR();
-    recognition.lang = "zh-CN";
-    recognition.interimResults = true;   // 实时显示中间结果
-    recognition.continuous = false;      // iOS 不支持连续识别，统一设为单次
-    recognition.maxAlternatives = 1;
+  }
 
-    recognition.onstart = () => {
+  // 每次点击麦克风都新建一个识别实例并绑定事件。
+  // 关键：iOS 上复用同一个实例容易卡在 aborted 状态，新建实例能规避；
+  // 且 start() 必须在用户点击的手势内调用，不能在 setTimeout 里自动重试（iOS 会再次中断）。
+  function bindRecognition(rec) {
+    rec.onstart = () => {
       listening = true;
       micBtn.classList.add("listening");
       setStatus("正在聆听…请说出算式", "listening");
     };
 
-    recognition.onresult = (event) => {
+    rec.onresult = (event) => {
       let interim = "", final = "";
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const res = event.results[i];
@@ -463,21 +460,8 @@
       }
     };
 
-    // 把真实错误码显示出来，方便定位（不再笼统地只说"出错"）
-    recognition.onerror = (e) => {
+    rec.onerror = (e) => {
       const code = e.error || "unknown";
-      // iOS 常见：首次启动识别被系统中断（aborted），自动重试一次往往就正常
-      if ((code === "aborted" || code === "network") && retryCount < 2) {
-        retryCount++;
-        isRetrying = true;
-        setStatus("识别被中断，正在重试（" + retryCount + "/2）…", "listening");
-        micBtn.classList.add("listening");
-        setTimeout(() => {
-          isRetrying = false;
-          try { recognition.start(); } catch (_) {}
-        }, 300);
-        return;
-      }
       listening = false;
       micBtn.classList.remove("listening");
       const map = {
@@ -492,18 +476,26 @@
       setStatus(msg, "err");
     };
 
-    recognition.onend = () => {
+    rec.onend = () => {
       listening = false;
       micBtn.classList.remove("listening");
-      if (isRetrying) return;   // 正在自动重试，不覆盖提示
       if (statusEl.classList.contains("listening"))
         setStatus("识别结束，可手动修改后计算", "");
     };
   }
 
+  function createRecognition() {
+    const rec = new SR();
+    rec.lang = "zh-CN";
+    rec.interimResults = true;
+    rec.continuous = false;
+    rec.maxAlternatives = 1;
+    bindRecognition(rec);
+    return rec;
+  }
+
   micBtn.addEventListener("click", () => {
     const env = detectEnv();
-    // 点麦克风前先拦掉最常见的两种失败场景，避免无意义的报错
     if (env.isWeChat) {
       setStatus("微信内置浏览器不支持语音。点右上角 ⋯ → 在浏览器中打开（Safari / Chrome）再试", "err");
       return;
@@ -516,10 +508,9 @@
       setStatus("麦克风需要 HTTPS。请用 https 开头的地址打开本页面", "err");
       return;
     }
-    if (!recognition) return;
-    if (listening) { recognition.stop(); return; }
-    retryCount = 0;
+    if (listening) { if (recognition) recognition.stop(); return; }
     try {
+      recognition = createRecognition();   // 每次新建实例，规避 iOS 实例复用导致的 abort
       recognition.start();
     } catch (e) {
       const detail = (e && e.message) ? e.message : "start-failed";
